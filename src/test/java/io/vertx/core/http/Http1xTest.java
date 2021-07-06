@@ -356,7 +356,6 @@ public class Http1xTest extends HttpTest {
     assertEquals(80, options.getPort());
     assertEquals(options, options.setPort(1234));
     assertEquals(1234, options.getPort());
-    assertIllegalArgumentException(() -> options.setPort(-1));
     assertIllegalArgumentException(() -> options.setPort(65536));
 
     assertEquals("0.0.0.0", options.getHost());
@@ -4789,26 +4788,52 @@ public class Http1xTest extends HttpTest {
   }
 
   @Test
-  public void testRandomPortsSameVerticle() throws Exception{
-    int numServers = 3;
-    waitFor(numServers);
+  public void testRandomSharedPortInVerticle() throws Exception{
+    testRandomPortInVerticle(3, new int[]{-1}, 1);
+  }
+
+  @Test
+  public void testRandomSharedPortsInVerticle() throws Exception{
+    testRandomPortInVerticle(3, new int[]{-1, -2}, 2);
+  }
+
+  @Test
+  public void testRandomPortsInVerticle1() throws Exception{
+    testRandomPortInVerticle(3, new int[]{0}, 3);
+  }
+
+  @Test
+  public void testRandomPortsInVerticle2() throws Exception{
+    testRandomPortInVerticle(3, new int[]{0, 0}, 6);
+  }
+
+  private void testRandomPortInVerticle(int instances, int[] bindPorts, int expectedPorts) throws Exception{
+    waitFor(instances);
     Set<Integer> ports = Collections.synchronizedSet(new HashSet<>());
     vertx.deployVerticle(() -> new AbstractVerticle() {
       @Override
       public void start(Promise<Void> startFuture) {
-        server = vertx.createHttpServer().requestHandler(req -> {
-          req.response().end();
-        }).listen(0, DEFAULT_HTTP_HOST, onSuccess(s -> {
-          int port = s.actualPort();
-          assertTrue(port > 0);
-          ports.add(port);
-          startFuture.complete();
+        List<Future<HttpServer>> futures = new ArrayList<>();
+        for (int bindPort : bindPorts) {
+          futures.add(vertx.createHttpServer().requestHandler(req -> {
+            req.response().end();
+          }).listen(bindPort, DEFAULT_HTTP_HOST));
+        }
+        CompositeFuture.all((List)futures).onComplete(onSuccess(cf -> {
+          futures.stream()
+            .map(Future::result)
+            .map(HttpServer::actualPort)
+            .forEach(port -> {
+            assertTrue(port > 0);
+            ports.add(port);
+            startFuture.complete();
+          });
         }));
       }
-    }, new DeploymentOptions().setInstances(numServers), event -> {
-      assertEquals(1, ports.size());
+    }, new DeploymentOptions().setInstances(instances), event -> {
+      assertEquals(expectedPorts, ports.size());
       int port = ports.iterator().next();
-      for (int i = 0;i < numServers;i++) {
+      for (int i = 0;i < instances;i++) {
         client.request(new RequestOptions()
           .setHost(DEFAULT_HTTP_HOST)
           .setPort(port)).onComplete(onSuccess(req -> {
